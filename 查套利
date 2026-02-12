@@ -1,0 +1,908 @@
+import base64
+import sys
+import os
+import time
+import requests
+from openpyxl import Workbook
+from datetime import datetime, timedelta
+from PyQt5.QtGui import QFont, QPixmap, QIcon, QColor
+from PyQt5.QtCore import QThreadPool, QDateTime, QByteArray
+from configparser import ConfigParser
+from PyQt5.QtWidgets import QApplication, QMessageBox, QFileDialog, QDateTimeEdit, QLabel, QComboBox, \
+    QListWidget, QStackedWidget, QProgressBar, QGroupBox, QGridLayout, QListWidgetItem, QFrame, \
+    QGraphicsDropShadowEffect, QInputDialog
+from PyQt5.QtCore import QRunnable, pyqtSignal, QObject, QStandardPaths
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton
+from PyQt5.QtCore import Qt, QSize
+
+
+class WorkerSignals(QObject):  # 定义信号类，用于线程间通信
+    finished = pyqtSignal(str)
+
+
+class DataWorker(QRunnable):  # 数据处理线程
+    def __init__(self, user_id, signals, port, token, code, start_time, end_time):
+        super().__init__()
+        self.user_id = user_id
+        self.signals = signals
+        self.port = port
+        self.code = code
+        self.token = token
+        self.start_time = start_time
+        self.end_time = end_time
+
+    def run(self):
+        headers = {
+            'Cookie': f'token={self.token}',
+        }
+
+        # 封装请求函数
+        def make_request(url, data):
+            for attempt in range(8):
+                try:
+                    response = requests.post(url, data=data, headers=headers, timeout=10)
+                    response.raise_for_status()
+                    return response.json().get('result', [])
+                except requests.exceptions.HTTPError as http_err:
+                    if response.status_code == 502:
+                        print(f"请求失败 502, 正在重试... 第 {attempt + 1} 次")
+                        time.sleep(3)
+                    else:
+                        print(f"请求失败: {http_err} 接口: {url}")
+                        return []
+                except Exception as e:
+                    print(f"其他错误: {str(e)} 接口: {url}")
+                    return []
+                time.sleep(1)
+            return []
+
+        url1 = f"http://xingfu.boinht.com:{self.port}/user/pf_list_with_game"
+        data1 = {
+            "channel_id": "",
+            "open_channel_id": "",
+            "id": "",
+            "game_user_id": self.user_id,
+            "is_bind": "",
+            "is_black": "",
+            "nickname": "",
+            "is_online": "",
+            "reg_ip": "",
+            "is_recharge": "",
+            "device_type": "",
+            "mobile": "",
+            "apns_code": "",
+            "begin_time": '',
+            "end_time": '',
+            "page_size": 32,
+            "page": 1,
+            "login_code": self.code,
+        }
+
+        data11 = make_request(url1, data1)
+        输出结果 = f"{self.user_id}"
+
+        for aa in data11:
+            游戏ID = aa.get('game_user_id', '无数据')
+            APPID = aa.get('app_user_id', '无数据')
+            注册时间 = datetime.fromtimestamp(int(aa.get('create_time', 0)))
+            最后登录时间 = datetime.fromtimestamp(int(aa.get('last_login', 0)))
+            注册 = aa.get('reg_ip', '')
+            注册ip地区 = aa.get('reg_ip_adress', '')
+            最后登录 = aa.get('last_ip', '')
+            最后登录ip地区 = aa.get('pre_ip_adress', '')
+            商户 = aa.get('channel_id')
+            渠道 = aa.get('open_channel_id')
+            打赏 = aa.get('use_diamond', 0)
+            钻石 = aa.get('diamond', 0)
+            总充值 = aa.get('total_recharge', 0)
+            总提现 = aa.get('total_cash', 0)
+            余额 = aa.get('money', 0)
+
+            注册IP = f'{注册} / {注册ip地区}'
+            最后登录IP = f'{最后登录} / {最后登录ip地区}'
+
+            url3 = f"http://xingfu.boinht.com:{self.port}/pp_user/recent_overview_by_userid"
+            data3 = {
+                "user_id": 游戏ID,
+                "start_time": self.start_time,
+                "end_time": self.end_time,
+                "login_code": self.code,
+            }
+
+            data33 = make_request(url3, data3)
+
+            for cc in data33:
+                有效投注 = cc.get('vaild_bet', 0) or 0
+                游戏损益 = cc.get('delta_bet_win', 0) or 0
+                充值 = cc.get('recharge', 0) or 0
+                提现 = cc.get('cash', 0) or 0
+                提充客损 = cc.get('delta_recharge_cash', 0) or 0
+
+                # 商户列表
+                url商户 = f"http://xingfu.boinht.com:{self.port}/payment_log/list_report_payment_log"
+                data商户 = {
+                    "page_size": 99999,
+                    "page": 1,
+                    "begin_date": datetime.fromtimestamp(self.start_time).strftime('%Y%m%d00'),
+                    "end_date": datetime.fromtimestamp(self.end_time).strftime('%Y%m%d00'),
+                    "sort_field": "money",
+                    "sort_type": "desc",
+                    "is_effect": 0,
+                    "login_code": self.code,
+                }
+                商户数据 = make_request(url商户, data商户)
+                商户字典 = {str(item.get("payment_class_id")): item.get("firm_name") for item in 商户数据}
+
+                # 充值明细
+                url明细 = f"http://xingfu.boinht.com:{self.port}/payment_log/list_payment_log"
+                data明细 = {
+                    "page_size": 99999,
+                    "page": 1,
+                    "begin_time": self.start_time,
+                    "end_time": self.end_time,
+                    "is_pay": "1",
+                    "money_type": 1,
+                    "login_code": self.code,
+                    "user_id": APPID,
+                }
+                明细数据 = make_request(url明细, data明细)
+
+                充值方式列表 = []
+                备注列表 = []
+
+                for 明细 in 明细数据:
+                    商户ID = 明细.get('payment_class_id')
+                    内部订单号 = 明细.get('order_id', '')
+                    当前备注 = str(明细.get('content', '')).strip()
+
+                    商户名称 = 商户字典.get(str(商户ID))
+                    if not 商户名称:
+                        if 内部订单号.startswith('KR'):
+                            商户名称 = '人工充值'
+                        elif 内部订单号.startswith('PF'):
+                            商户名称 = '后台充值'
+                        else:
+                            商户名称 = '未知商户'
+
+                    # ➕ 充值方式加进列表（不管是不是后台）
+                    if 商户名称:
+                        充值方式列表.append(商户名称)
+
+                    # ➕ 只有后台充值才加备注
+                    if 商户名称 == '后台充值':
+                        备注列表.append(当前备注 if 当前备注 else '无备注')
+
+                # ✅ 充值方式去重 + 保留顺序
+                充值方式 = "\n ".join(dict.fromkeys(充值方式列表)) if 充值方式列表 else "无充值方式"
+
+                # ✅ 备注去重 + 保留顺序
+                备注 = "\n ".join(dict.fromkeys(备注列表)) if 备注列表 else "无备注"
+
+                # 设备号合集
+                url设备 = f"http://xingfu.boinht.com:{self.port}/user/list_user_login_divice"
+                data设备 = {"user_id": APPID, "login_code": self.code}
+                设备数据 = make_request(url设备, data设备)
+
+                设备号合集列表 = [item.get('apnsCode') for item in 设备数据 if item.get('apnsCode')]
+                设备号合集 = "\n ".join(设备号合集列表) if 设备号合集列表 else "无设备"
+
+                # 状态
+                url状态 = f"http://xingfu.boinht.com:{self.port}/user/get_user_game_data_by_app_userid"
+                data状态 = {"user_id": APPID, "login_code": self.code}
+                状态数据 = make_request(url状态, data状态)
+                状态值 = 状态数据[0].get('is_game_black', 0) if 状态数据 else 0
+                状态 = '正常' if 状态值 == 0 else '已冻结'
+
+                # 打码倍数
+                打码倍数 = round(有效投注 / 充值, 2) if 充值 else 0
+
+                # 拼接输出
+                输出结果 += f", {APPID}, {渠道}, {注册时间}, {注册IP}, {最后登录IP}, {充值}, {充值方式}, {备注}, {提现}, {提充客损}, {打码倍数}, {设备号合集}, {状态}"
+
+        print(输出结果)
+        self.signals.finished.emit(输出结果)
+
+
+class UserWindow(QWidget):  # 主窗口类
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("游戏ID查套利")
+
+        # 加载 base64 图标（确保字符串完整）
+        icon_base64 = "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//8iV///Ilf//yJX//8iV///Ilf//yJW//IiV/+HGFX/FQAAAAAAAAAAAAAAACFV/ychV//OIlf/5AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIVj/PSFW/88iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV//2Ilf/ryJX/5AiV/+1Ilf/+iJX//8iV//aAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJEn/ByFW/5IiVv/+Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX/6UAAAAAAAAAAAAAAAAAAAAAAAAAACBV/xghVv/JIlf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf/TAAAAAAAAAAAAAAAAAAAAAAhWv8fIVf/3SJX//8iV///Ilf//yJX/+giVv+9IVf/oSJX/5YiV/+cIlb/tCJX/98iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yFX/84AAP8BAAAAAAAAAAAAAAAAIVn/FyJX/9wiV///Ilb/ySJV/28jVf8kAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACFS/x8hV/91Ilf/4CJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8hV//8IFf/OAAAAAAAAAAAAAAAACpV/wYiV//FIlf/rSJY/zQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACpV/wYgVv+OIlf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJW/4gAAAAAAAAAAAAAAAAAAAAAIVf/VSBT/zcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAhWf8XIlf/xSJX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AAAAAAAAIlb/dyJX//8hVv/PG1H/EwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIGD/CABV/wMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABxV/wkhV//lIVf/wh5a/xEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIVj/eiJX/5wkSf8HAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACFZ/xciVv9TAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKAAAADAAAABgAAAAAQAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/AUBA/wQqVf8GJEn/BzNm/wUAAP8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/wEgUP8QHlX/MyJW/1MhWP9rIlf/fiNW/4whV/+SIVb/lCJX/40iVv9/I1f/ZiJW/0QgVf8YAAD/AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACFT/y4hWf8XAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAaTf8KIlf/TCFY/6AjV//VIVf/5SJX//AiV//4Ilf//iJX//8iV///Ilf//yJX//8iVv/+Ilf/9yJX/+siV//YIlf/liNX/ywAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJFv/KiJX/9AjV/9JAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAcVf8JHVf/IyFW/3whV//fIlf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJW//ghVv+gIVf/Lxdd/wsAAAAAAAAAAAAAAAAAAAAAAAAAACpV/wYkWP9AIVj/3SJX//UhWP9jAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACNU/zoiVv+UIlf/5CJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf/6iJX/54gWP9XIlP/JSBg/xAcVf8bI1X/QiFX/4oiV//iIlf//yJX//YhVv9lAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAbXv8TIlf/kCJX/+giV//8Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//4iV//xIlf/4SJX/9ohV//dIlf/6iJX//wiV///Ilf//yJX//EhV/9VAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQED/BCBY/zciV//IIlf//iJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yNX/+UkV/8yAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgUP8QIVb/cyJX/+ciV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJW/8MaTf8KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACdi/w0iV/+VIlf/9iJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX/2EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHFX/EiNW/6EiV///Ilf//yJX//8iV///Ilf//yJX//oiV//vIlf/5yJX/+EhV//dIlf/3CNX/90iV//hIlf/6CJX//EiV//8Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf/0kBA/wQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAjWP8dIVf/qCJX//8iV///Ilf//yJX//YhV//HIVf/mSJY/3EfWP9RIFj/NyJT/yUdWP8aIVn/FydY/xoiV/8mI1j/OiNY/1chVv98Ilf/qiJX/+EiV//+Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iVv/vIlf/TAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACdO/w0hWP+aIlf/+yJX//8iV//nIVb/iyRX/zIgVf8YHFX/CQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgP8CJFv/DiJa/yUhVv9zIlf/6CJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//0iV/+YGmb/CgAAAAAAAAAAAAAAAAAAAAAAAAAAAFX/AyFW/3MiV//zIlf/2SBW/3YaWf8UAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/wEcVf8SIlf/gSJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX/9giU/8lAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIFf/WCJW/8MgV/9vHVj/GgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACJb/y0iV/+tIlf/+SJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX/74AQP8EAAAAAAAAAAAAAAAAAAAAAAAAAAAgWP8gIlb/WR1Y/xoAVf8DAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIFT/QCFX/94iV//9Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX/+AiWv8lAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEBA/wQiVv9TIlj/6yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yFX/+0iVv9KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACJX/2EiV//iIlf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//YhWP9jAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP8BI1f/bCJX//EiV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//shVv90AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEBA/wQhWP9jIlf/8SJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//8iV///Ilf//yJX//0hV/97AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA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AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACFX/1UiVv/PIFn/PwBA/wQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHFX/EiJX/58hVf8nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIlP/JSJV/w8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="  # 替换成你的 base64
+        icon_data = QByteArray.fromBase64(icon_base64.encode())
+
+        # 更可靠的图标加载方式
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(icon_data, "ICO"):  # 显式指定格式
+            print("❌ 图标加载失败！请检查 base64 数据或文件格式")
+        else:
+            self.setWindowIcon(QIcon(pixmap))  # 设置窗口和任务栏图标
+
+        self.resize(1000, 650)  # 初始大小
+        self.setMinimumSize(800, 500)  # 限制最小
+
+        self.groups = ["绿茶", "妖姬", "色戒", "爱色", "性福", "少女", '人妻', '乐咪']
+        self.token_inputs = {}
+        self.thread_pool = QThreadPool()
+        self.completed_tasks = []  # 初始化已完成任务列表
+
+        # 设置主窗口样式
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: white;            /* 白色背景 */
+                color: #3498db;                     /* 蓝色文字 */
+                border: 1px solid #3498db;          /* 蓝色边框 */
+                border-radius: 8px;                 /* 圆角半径8px */
+                padding: 10px 16px;                 /* 内边距 */
+                font-size: 16px;                    /* 字体大小 */
+                font-weight: bold;                 /* 字体加粗 */
+                letter-spacing: 0.5px;              /* 字符间距 */
+            }
+
+            QPushButton:hover {
+                background-color: #ecf5fb;          /* 鼠标悬停时浅蓝背景（视觉反馈） */
+                color: #2980b9;                     /* 悬停时文字颜色稍微加深 */
+                border: 1px solid #2980b9;          /* 边框颜色也稍微加深 */
+            }
+
+            QPushButton:pressed {
+                background-color: #d6eaf8;          /* 按下时更深一点的浅蓝背景 */
+                padding-left: 14px;                 /* 模拟按压感 */
+                padding-top: 12px;
+            }
+
+            QPushButton:disabled {
+                background-color: #f0f0f0;          /* 禁用时背景灰色 */
+                color: #bdc3c7;                     /* 禁用时字体浅灰 */
+                border: 1px solid #ccc;             /* 边框变浅灰 */
+            }
+
+            QLineEdit, QComboBox, QDateTimeEdit {
+                padding: 6px;                      /* 输入控件内边距（6px） */
+                border: 1px solid #ccc;            /* 边框颜色为浅灰色 */
+                border-radius: 5px;                /* 圆角（5px） */
+                font-size: 20px;                   /* 字体大小（20px） */
+            }
+
+            QGroupBox {
+                background-color: #f9f9f9;         /* 分组框背景颜色（浅灰白） */
+                border: 1px solid #dcdcdc;         /* 边框颜色（亮灰） */
+                border-radius: 8px;                /* 分组框圆角半径（8px） */
+                margin-top: 20px;                  /* 与上方控件间距（20px） */
+                padding: 15px;                     /* 内边距（15px，增强呼吸感） */
+            }
+
+            QGroupBox::title {
+                subcontrol-origin: margin;         /* 标题位置从外边距起算 */
+                subcontrol-position: top left;     /* 标题靠近左上角对齐 */
+                padding: 0 8px;                    /* 标题左右内边距（8px） */
+                background-color: #f9f9f9;         /* 标题背景色与框体一致 */
+                color: #2c3e50;                    /* 标题文字颜色（深蓝灰） */
+                font-weight: bold;                 /* 标题加粗，提升辨识度 */
+            }
+        """)
+
+        main_layout = QVBoxLayout(self)  # 设置主布局为垂直布局
+
+        # 内容区域：导航栏 + 页面
+        content_layout = QHBoxLayout()  # 水平布局容纳导航栏和页面
+
+        # 左侧导航栏
+        self.nav_list = QListWidget()
+        self.nav_list.setFixedWidth(200)  # 设置固定宽度
+        self.nav_list.setFont(QFont("Microsoft YaHei", 11))  # 设置字体和大小
+        # 设置导航栏样式
+        self.nav_list.setStyleSheet("""
+                    QListWidget {
+                        background-color: #2c3e50;  /* 列表控件背景颜色（深蓝色） */
+                        color: #ecf0f1;            /* 列表默认文字颜色（浅灰色） */
+                        border: none;              /* 无边框 */
+                        padding-top: 15px;        /* 顶部内边距（15px） */
+                        outline: none;            /* 移除焦点时的虚线边框 */
+                    }
+                    QListWidget::item {
+                        padding: 12px 20px;       /* 列表项内边距（上下12px，左右20px） */
+                        margin: 6px 10px;         /* 列表项外边距（上下6px，左右10px） */
+                        font-weight: normal;      /* 正常字体粗细 */
+                        border-radius: 6px;       /* 列表项圆角半径（6px） */
+                    }
+                    QListWidget::item:hover {
+                        background-color: #3d566e;  /* 鼠标悬停时背景颜色（稍亮的蓝色） */
+                        font-weight: bold;         /* 悬停时字体加粗 */
+                        color: #ffffff;            /* 悬停时文字颜色（纯白） */
+                    }
+                    QListWidget::item:selected {
+                        background-color: #1abc9c;  /* 选中项背景颜色（蓝绿色） */
+                        color: #ffffff;            /* 选中项文字颜色（纯白） */
+                        font-weight: bold;         /* 选中项字体加粗 */
+                    }
+                """)
+
+        item1 = QListWidgetItem("📊 数据获取")
+        item2 = QListWidgetItem("⚙️ 参数配置")
+        item3 = QListWidgetItem("📘 关于我们")
+
+        item1.setSizeHint(QSize(item1.sizeHint().width(), 40))
+        item2.setSizeHint(QSize(item2.sizeHint().width(), 40))
+        item3.setSizeHint(QSize(item3.sizeHint().width(), 40))
+
+        self.nav_list.addItem(item1)
+        self.nav_list.addItem(item2)
+        self.nav_list.addItem(item3)
+
+        self.nav_list.setCurrentRow(0)
+        self.nav_list.currentRowChanged.connect(self.switch_page)
+
+        # 右侧页面栈
+        self.pages = QStackedWidget()
+        self.data_tab = QWidget()
+        self.config_tab = QWidget()
+        self.about_tab = QWidget()
+        self.pages.addWidget(self.data_tab)
+        self.pages.addWidget(self.config_tab)
+        self.pages.addWidget(self.about_tab)
+
+        content_layout.addWidget(self.nav_list)
+        content_layout.addWidget(self.pages)
+        main_layout.addLayout(content_layout)
+
+        # 状态栏与进度条
+        self.status_label = QLabel("状态：等待中")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        main_layout.addWidget(self.status_label)
+        main_layout.addWidget(self.progress_bar)
+
+        # 页面设置
+        self.setup_data_tab()
+        self.setup_config_tab()
+        self.setup_about_tab()
+
+        self.load_config()
+        self.set_default_dates()
+
+    def switch_page(self, index):
+        self.pages.setCurrentIndex(index)
+
+    def setup_data_tab(self):  # 数据获取页面
+        layout = QVBoxLayout()
+
+        # 文件与线程设置
+        file_group = QGroupBox("分组选择")
+        file_layout = QVBoxLayout()
+
+        self.file_button = QPushButton("📁 选择数据文件")
+        self.file_button.clicked.connect(self.select_file)
+        file_layout.addWidget(self.file_button)
+
+        self.thread_count_input = QLineEdit()
+        self.thread_count_input.setPlaceholderText("多开台数（1-100）")
+        file_layout.addWidget(self.thread_count_input)
+
+        self.group_select_home = QComboBox()
+        self.group_select_home.addItems(self.groups)
+        file_layout.addWidget(self.group_select_home)
+
+        file_group.setLayout(file_layout)
+        layout.addWidget(file_group)
+
+        # 日期范围
+        date_group = QGroupBox("日期范围选择")
+        date_layout = QVBoxLayout()
+
+        self.start_time_input = QDateTimeEdit()
+        self.start_time_input.setCalendarPopup(True)
+        self.start_time_input.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+
+        self.end_time_input = QDateTimeEdit()
+        self.end_time_input.setCalendarPopup(True)
+        self.end_time_input.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+
+        date_layout.addWidget(QLabel("开始时间："))
+        date_layout.addWidget(self.start_time_input)
+        date_layout.addWidget(QLabel("结束时间："))
+        date_layout.addWidget(self.end_time_input)
+
+        nav_layout = QHBoxLayout()
+
+        self.prev_day_btn = QPushButton("⏪ 上一日")
+        self.prev_day_btn.clicked.connect(self.on_prev_day_clicked)
+        nav_layout.addWidget(self.prev_day_btn)
+
+        self.today_btn = QPushButton("⏺️ 当日")
+        self.today_btn.clicked.connect(self.on_today_clicked)
+        nav_layout.addWidget(self.today_btn)
+
+        self.next_day_btn = QPushButton("下一日 ⏩")
+        self.next_day_btn.clicked.connect(self.on_next_day_clicked)
+        nav_layout.addWidget(self.next_day_btn)
+
+        date_layout.addLayout(nav_layout)
+        date_group.setLayout(date_layout)
+        layout.addWidget(date_group)
+
+        # 操作按钮水平布局
+        button_layout = QHBoxLayout()
+
+        self.get_button = QPushButton("🚀 开始获取")
+        self.get_button.clicked.connect(self.start_processing)
+        button_layout.addWidget(self.get_button)
+
+        self.export_button = QPushButton("📤 导出数据")
+        self.export_button.clicked.connect(self.export_data)
+        button_layout.addWidget(self.export_button)
+
+        layout.addLayout(button_layout)  # 将按钮水平布局添加到主布局中
+
+        self.data_tab.setLayout(layout)
+
+        # 初始样式设置
+        self.highlight_selected_button(self.today_btn)
+
+    def highlight_selected_button(self, selected_button):  # 高亮选中按钮
+        buttons = [self.prev_day_btn, self.today_btn, self.next_day_btn]
+        for btn in buttons:
+            if btn == selected_button:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #1DA1F2;
+                        color: white;
+                        border-radius: 6px;
+                        padding: 8px 14px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #0d8ddf;
+                    }
+                """)
+            else:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: white;
+                        color: #3498db;
+                        border: 1px solid #3498db;
+                        border-radius: 6px;
+                        padding: 8px 14px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #ecf5fb;
+                        color: #2980b9;
+                        border: 1px solid #2980b9;
+                    }
+                """)
+
+    # 封装点击事件方法
+    def on_prev_day_clicked(self):
+        self.move_to_previous_day()
+        self.highlight_selected_button(self.prev_day_btn)
+
+    def on_today_clicked(self):
+        self.set_default_dates()
+        self.highlight_selected_button(self.today_btn)
+
+    def on_next_day_clicked(self):
+        self.move_to_next_day()
+        self.highlight_selected_button(self.next_day_btn)
+
+    def setup_config_tab(self):  # 配置页面
+        layout = QVBoxLayout()
+
+        config_group = QGroupBox("分组 Cookie 配置")
+        grid = QGridLayout()
+
+        for i, group in enumerate(self.groups):
+            label = QLabel(f"{group} Cookie：")
+            line_edit = QLineEdit()
+            line_edit.setPlaceholderText("请输入平台返回的 Cookie 值")
+            self.token_inputs[group] = line_edit
+            grid.addWidget(label, i, 0)
+            grid.addWidget(line_edit, i, 1)
+
+        config_group.setLayout(grid)
+        layout.addWidget(config_group)
+
+        # 端口配置
+        port_group = QGroupBox("基础参数")
+        port_layout = QVBoxLayout()
+
+        # 端口输入行（横向布局）
+        port_row = QHBoxLayout()
+        port_label = QLabel("端口号：")
+        self.port_input = QLineEdit()
+        self.port_input.setPlaceholderText("请输入端口号，例如：8080")
+        port_row.addWidget(port_label)
+        port_row.addWidget(self.port_input)
+        port_layout.addLayout(port_row)
+
+        # 登录码输入行（横向布局）
+        code_row = QHBoxLayout()
+        code_label = QLabel("小明登录码：")
+        self.code_input = QLineEdit()
+        self.code_input.setPlaceholderText("请输入小明计算器登陆码")
+        code_row.addWidget(code_label)
+        code_row.addWidget(self.code_input)
+        port_layout.addLayout(code_row)
+
+        port_group.setLayout(port_layout)
+        layout.addWidget(port_group)
+
+        self.save_button = QPushButton("💾 保存配置")
+        self.save_button.clicked.connect(self.manual_save)
+        layout.addWidget(self.save_button)
+
+        self.config_tab.setLayout(layout)
+
+    def setup_about_tab(self):  # 关于我们页面
+        layout = QVBoxLayout()
+        layout.addStretch(1)
+
+        # 构建外部卡片框
+        frame = QFrame()
+        frame.setStyleSheet("""
+            QFrame {
+                border-radius: 15px;  /* 设置圆角边框，半径为15像素，使边角圆润 */
+                padding: 25px;        /* 内边距，让内容与边框有距离，更美观 */
+                margin-left: 15px;    /* 左边距，控制整个卡片距离容器边的空隙 */
+                margin-right: 15px;   /* 右边距，确保整体居中对称 */
+
+                background: qlineargradient(  /* 设置线性渐变背景 */
+                    spread:pad,               /* 渐变填充模式：pad 表示边缘以最后一个颜色填充 */
+                    x1:0, y1:0,               /* 渐变起点：左上角 */
+                    x2:1, y2:1,               /* 渐变终点：右下角，形成对角渐变 */
+                    stop:0 #e0f7fa,           /* 渐变起始颜色：浅蓝色 */
+                    stop:1 #d1c4e9            /* 渐变结束颜色：浅紫色 */
+                );
+
+                border: 1px solid #b0bec5;    /* 设置边框为1像素实线，颜色为灰蓝色，增强边界清晰度 */
+            }
+        """)
+        # 添加阴影效果
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(25)
+        shadow.setXOffset(0)
+        shadow.setYOffset(4)
+        shadow.setColor(QColor(0, 0, 0, 80))
+        frame.setGraphicsEffect(shadow)
+
+        frame_layout = QVBoxLayout()
+
+        # ===== Base64 logo 处理 =====
+        logo_base64 = b"""
+        iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAYAAAD0eNT6AAAAAXNSR0IArs4c6QAAIABJREFUeF7snXmAHFW1xr9TM9nYQQWEQKarIwREQYMLCoIoKig7vSQQ9lVB5LEoixBWn4g+UEGNikgg6QVl37ewyqooErbp7iGsAQHZsk7XeameQZOQZHqp6r636uv3h09z7znf+Z2byTfVt+4V8EMCJEACJEACJBA7AhK7ilkwCZAACZAACZAAaAC4CEiABEiABEgghgRoAGLYdJZMAiRAAiRAAjQAXAMkQAIkQAIkEEMCNAAxbDpLJgESIAESIAEaAK4BEiABEiABEoghARqAGDadJZMACZAACZAADQDXAAmQAAmQAAnEkAANQAybzpJJgARIgARIgAaAa4AESIAESIAEYkiABiCGTWfJJEACJEACJEADwDVAAiRAAiRAAjEkQAMQw6azZBIgARIgARKgAeAaIAESIAESIIEYEqABiGHTWTIJkAAJkAAJ0ABwDZAACZAACZBADAnQAMSw6SyZBEiABEiABGgAuAZIgARIgARIIIYEaABi2HSWTAIkQAIkQAI0AFwDJEACJEACJBBDAjQAMWw6SyYBEiABEiABGgCuARIgARIgARKIIQEagBg2nSWTAAmQAAmQAA0A1wAJkAAJkAAJxJAADUAMm86SSYAESIAESIAGgGuABEiABEiABGJIgAYghk1nySRAAiRAAiRAA8A1QAIkQAIkQAIxJEADEMOms2QSIAESIAESoAHgGiABEiABEiCBGBKgAYhh01kyCZAACZAACdAAcA2QAAmQAAmQQAwJ0ADEsOksmQRIgARIgARoALgGSIAESIAESCCGBGgAYth0lkwCJEACJEACNABcAyRAAiRAAiQQQwI0ADFsOksmARIgARIgARoArgESIAESIAESiCEBGoAYNp0lkwAJkAAJkAANANcACZAACZAACcSQAA1ADJvOkkmABEiABEiABoBrgARIgARIgARiSIAGIIZNZ8kkQAIkQAIkQAPANUACJEACJEACMSRAAxDDprNkEiABEiABEqAB4BogARKIJAGdtM7KMnX2e5EsjkWRQAAEaAACgMgQJEAC5hHQHceOwOrVU9DtXSSXPfeyeQqpiAQ6S4AGoLP8mZ0ESCBEAppKjoXj3QhxTpBc6coQUzE0CVhHgAbAupZRMAmQ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
+        """  # 你可以替换为你自己的 base64 字符串（确保是 PNG 或 JPG）
+
+        logo_label = QLabel()
+        image_data = base64.b64decode(logo_base64)
+        pixmap = QPixmap()
+        pixmap.loadFromData(image_data)
+
+        logo_label.setPixmap(pixmap.scaled(80, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        logo_label.setAlignment(Qt.AlignCenter)
+        frame_layout.addWidget(logo_label)
+
+        # 文本内容
+        about_text = QLabel("""
+            <h2 style="text-align:center; color:#2c3e50;">关于 小燕子</h2>
+            <p style="text-align:center; font-size:14px; color:#34495e;">
+                <b>小燕子</b> 是基于 Python 开发的轻量级 <b style="color:#e67e22;">网页爬虫工具</b>，用于结构化抓取动态网站数据。
+            </p>
+            <p style="text-align:center; font-size:14px; color:#34495e;">
+                支持 <b>Cookie 登录态管理</b>、<b>多线程任务并发</b>、<b>定时调度执行</b> 和 <b>按分组配置抓取策略</b>。
+            </p>
+            <p style="text-align:center; font-size:14px; color:#34495e;">
+                可用于接口调用分析、数据自动备份、评论追踪、内容监控等各类数据采集任务。
+            </p>
+            <p style="text-align:center; font-size:14px; color:#34495e;">
+                提供可视化操作界面，降低配置门槛，适合数据工程、运维、分析等角色快速部署与使用。
+            </p>
+            <hr style="border: none; border-top: 1px solid #ccc; margin: 12px 60px;" />
+            </p>
+            <p style="text-align:center; font-size:14px; color:#34495e;">
+                版本号：<b style="color:#27ae60;">2025.07.06</b>
+            </p>
+        """)
+
+        about_text.setAlignment(Qt.AlignHCenter)
+        about_text.setTextFormat(Qt.RichText)
+        about_text.setWordWrap(True)
+
+        frame_layout.addWidget(about_text)
+        frame.setLayout(frame_layout)
+
+        layout.addWidget(frame)
+        layout.addStretch(1)
+        self.about_tab.setLayout(layout)
+
+    def set_default_dates(self):  # 设置默认日期为今天和明天
+        current_date = datetime.now().date()
+        tomorrow = current_date + timedelta(days=1)
+        self.start_time_input.setDateTime(QDateTime(current_date.year, current_date.month, current_date.day, 0, 0))
+        self.end_time_input.setDateTime(QDateTime(tomorrow.year, tomorrow.month, tomorrow.day, 0, 0))
+
+    def move_to_previous_day(self):  # 移动到前一天
+        date = self.start_time_input.dateTime().addDays(-1)
+        self.start_time_input.setDateTime(date)
+        self.end_time_input.setDateTime(date.addDays(1))
+
+    def move_to_next_day(self):  # 移动到后一天
+        date = self.start_time_input.dateTime().addDays(1)
+        self.start_time_input.setDateTime(date)
+        self.end_time_input.setDateTime(date.addDays(1))
+
+    def select_file(self):  # 选择用户ID文件
+        desktop_path = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)  # 获取桌面路径
+        file_name, _ = QFileDialog.getOpenFileName(self, "选择用户ID文件", desktop_path,
+                                                   "Text Files (*.txt);;All Files (*)")
+        if file_name:
+            error_lines = []  # 用于记录包含非数字字符的行号
+            self.user_ids = []  # 清空之前的用户ID列表
+
+            try:
+                with open(file_name, 'r', encoding='utf-8') as file:  # 使用utf-8编码打开文件
+                    for line_number, line in enumerate(file, start=1):  # 逐行读取文件
+                        line = line.strip()  # 去除空白字符
+                        if line:  # 如果行不为空
+                            if line.isdigit():  # 检查是否为纯数字
+                                self.user_ids.append(line)  # 如果是数字，添加到用户ID列表
+                            else:
+                                error_lines.append(line_number)  # 记录错误行号
+
+                if error_lines:
+                    # 如果有错误行，提示用户
+                    error_message = f"文件中有非数字字符，错误行号：{', '.join(map(str, error_lines))}"
+                    QMessageBox.warning(self, "错误", error_message)
+                else:
+                    # 如果没有错误，提示加载成功
+                    QMessageBox.information(self, "提示", f"已加载 {len(self.user_ids)} 个用户ID！")
+                    self.get_button.setEnabled(True)
+
+            except UnicodeDecodeError:
+                # 如果文件编码错误，提示用户
+                QMessageBox.warning(self, "错误", "文件编码错误，请确保文件使用UTF-8编码！")
+
+    def start_processing(self):  # 开始处理数据
+        # 检查是否选择了文件
+        if not hasattr(self, 'user_ids') or not self.user_ids:
+            QMessageBox.warning(self, "提示", "请先选择包含用户ID的文件！")
+            return
+
+        # 设置允许使用的截止时间 (YYYY-MM-DD HH:MM:SS)
+        self.expiration_date_str = "2025-12-06 23:59:59"  # 软件过期时间
+        self.expiration_date = datetime.strptime(self.expiration_date_str, "%Y-%m-%d %H:%M:%S")
+
+        # 检查是否需要提醒
+        remaining_days = self.get_remaining_days()
+        if remaining_days > 0 and remaining_days <= 7:
+            QMessageBox.warning(self, "软件即将更新",
+                                f"本软件将在{remaining_days}天后自动更新：\n请联系《富贵》获取最新版本。")
+
+        # 检查是否过期
+        if self.is_expired():
+            QMessageBox.critical(self, "软件已更新", f"你的应用版本过低：\n请联系《富贵》获取最新版本。")
+            sys.exit(0)  # 退出程序
+
+        self.completed_tasks = []  # 用于存储已完成的任务
+        port = self.port_input.text().strip()
+        group = self.group_select_home.currentText()
+        token = self.token_inputs[group].text().strip()
+        code = self.code_input.text().strip()
+
+        missing_fields = []
+        if not port:
+            missing_fields.append("端口（port）")
+        if not code:
+            missing_fields.append("验证码（code）")
+        if not token:
+            missing_fields.append(f"小组 {group} 的 Cookie")
+
+        if missing_fields:
+            QMessageBox.warning(self, "输入错误", f"请填写以下内容：\n" + "\n".join(missing_fields))
+            return
+
+        # 检查时间输入
+        start = self.start_time_input.dateTime().toString("yyyy-MM-dd HH:mm:ss")
+        end = self.end_time_input.dateTime().toString("yyyy-MM-dd HH:mm:ss")
+        if end < start:
+            QMessageBox.warning(self, '警告', '结束时间不能早于开始时间')
+            return
+
+        # 将字符串转换为datetime对象
+        start_datetime = datetime.strptime(start, '%Y-%m-%d %H:%M:%S')
+        end_datetime = datetime.strptime(end, '%Y-%m-%d %H:%M:%S')
+        print(f"开始时间: {start_datetime}, 结束时间: {end_datetime}")
+
+        # 将时间转换为时间戳
+        start_time = int(start_datetime.timestamp())
+        end_time = int(end_datetime.timestamp())
+
+        # 获取用户输入的线程数量
+        thread_count = self.thread_count_input.text()
+        if thread_count.isdigit() and int(thread_count) > 0:
+            max_threads = min(int(thread_count), 100)  # 限制线程数量最高为100
+            self.thread_pool.setMaxThreadCount(max_threads)
+        else:
+            QMessageBox.warning(self, "输入错误", "请确保多开数量为正整数！")
+            return
+
+        # 更新状态栏
+        self.status_label.setText(f"状态：正在获取数据 (0/{len(self.user_ids)})")
+        self.progress_bar.setMaximum(len(self.user_ids))
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+
+        for user_id in self.user_ids:
+            signals = WorkerSignals()
+            signals.finished.connect(self.task_finished)
+            worker = DataWorker(user_id, signals, port, token, code, start_time, end_time)
+            self.thread_pool.start(worker)
+
+            self.file_button.setEnabled(False)  # 禁用选择文件按钮
+            self.thread_count_input.setEnabled(False)  # 禁用线程输入
+            self.group_select_home.setEnabled(False)  # 禁用小组选择选择
+            self.start_time_input.setEnabled(False)  # 禁用开始时间
+            self.end_time_input.setEnabled(False)  # 禁用结束按钮
+            self.get_button.setEnabled(False)  # 禁用获取按钮
+            self.export_button.setEnabled(False)  # 禁用导出按钮
+            self.prev_day_btn.setEnabled(False)  # 禁用上一日按钮
+            self.today_btn.setEnabled(False)  # 禁用当日按钮
+            self.next_day_btn.setEnabled(False)  # 禁用下一日按钮
+
+    def is_expired(self):
+        """检查当前时间是否超过指定的截止时间"""
+        current_time = datetime.now()  # 获取当前系统时间
+        return current_time > self.expiration_date
+
+    def get_remaining_days(self):
+        """计算距离过期时间还有多少天"""
+        current_time = datetime.now()  # 获取当前系统时间
+        days_left = (self.expiration_date - current_time).days  # 计算剩余天数
+        return days_left  # 返回剩余的天数
+
+    def task_finished(self, result):  # 任务完成的回调函数
+        self.completed_tasks.append(result)
+        # 更新进度条和状态
+        progress = len(self.completed_tasks)
+        total = len(self.user_ids)
+        self.progress_bar.setValue(progress)
+        self.status_label.setText(f"状态：正在获取数据 ({progress}/{total})")
+
+        if progress == total:
+            self.status_label.setText("状态：所有数据已获取完成！")
+            self.progress_bar.setVisible(False)
+
+        if len(self.completed_tasks) == len(self.user_ids):
+            QMessageBox.information(self, "提示", f"所有数据已获取完成！")
+            self.file_button.setEnabled(True)  # 启用选择文件按钮
+            self.thread_count_input.setEnabled(True)  # 启用线程输入
+            self.group_select_home.setEnabled(True)  # 启用小组选择选择
+            self.start_time_input.setEnabled(True)  # 启用开始时间
+            self.end_time_input.setEnabled(True)  # 启用结束按钮
+            self.get_button.setEnabled(True)  # 启用获取按钮
+            self.export_button.setEnabled(True)  # 启用导出按钮
+            self.prev_day_btn.setEnabled(True)  # 启用上一日按钮
+            self.today_btn.setEnabled(True)  # 启用当日按钮
+            self.next_day_btn.setEnabled(True)  # 启用下一日按钮
+
+    def export_data(self):  # 导出数据到Excel文件
+        if not self.completed_tasks:
+            QMessageBox.warning(self, "警告", "没有数据可导出！")
+            return
+
+        try:
+            wb = Workbook()
+            ws = wb.active
+            ws.append(['渠道', 'APPID', '游戏ID', '注册时间', '注册IP', '最后登录IP', '充值', '充值方式',
+                       '彩金名称', '提现', '提充客损', '打码倍数', '设备号合集', '投注游戏', '状态'])  # 更新表头
+
+            for task in self.completed_tasks:
+                parts = task.split(", ")
+                # 使用默认值处理可能缺失的数据
+                游戏ID = self.convert_to_number(parts[0]) if len(parts) > 0 else "无数据"
+                APPID = self.convert_to_number(parts[1]) if len(parts) > 1 else "无数据"
+                渠道号 = parts[2] if len(parts) > 2 else "无数据"  # 合并的渠道信息
+                注册时间 = parts[3] if len(parts) > 3 else "无数据"
+                注册IP = parts[4] if len(parts) > 4 else "无数据"
+                最后登录IP = parts[5] if len(parts) > 5 else "无数据"
+                充值 = self.convert_to_number(parts[6]) if len(parts) > 6 else "无数据"
+                充值方式 = parts[7] if len(parts) > 7 else "无数据"
+                备注 = parts[8] if len(parts) > 8 else "无数据"
+                提现 = self.convert_to_number(parts[9]) if len(parts) > 9 else "无数据"
+                提充客损 = self.convert_to_number(parts[10]) if len(parts) > 10 else "无数据"
+                打码倍数 = self.convert_to_number(parts[11]) if len(parts) > 11 else "无数据"
+                设备号合集 = parts[12] if len(parts) > 12 else "无数据"
+                状态 = parts[13] if len(parts) > 13 else "无数据"
+
+                # 更新数据行
+                ws.append([渠道号, APPID, 游戏ID, 注册时间, 注册IP, 最后登录IP, 充值, 充值方式, 备注, 提现, 提充客损, 打码倍数, 设备号合集, '', 状态])
+
+            current_time = datetime.now().strftime("%Y年%m月%d日%H时%M分%S秒")
+            filename = f"导出数据_{current_time}.xlsx"
+            wb.save(filename)
+            QMessageBox.information(self, "提示", f"数据已导出到 {filename}")
+            os.startfile(filename)
+
+        except Exception as e:
+            QMessageBox.critical(self, "导出错误", f"导出数据时发生错误: {str(e)}")
+
+    def convert_to_number(self, value):  # 将字符串转换为数字，如果转换失败则返回"无数据"
+        try:
+            return float(value)  # 尝试将值转换为浮点数
+        except ValueError:
+            return "无数据"  # 转换失败时返回"无数据"
+
+    def save_config(self, port, token_dict, code):  # 保存配置文件
+        config = ConfigParser()
+
+        # 不再读取旧配置，直接清空并写入新的
+        config['COMMON'] = {'Port': port, 'Code': code}
+        for group, token in token_dict.items():
+            config[group] = {'Token': token}
+
+        with open('config.ini', 'w') as configfile:
+            config.write(configfile)
+
+    def load_config(self):  # 加载配置文件
+        config = ConfigParser()
+        config.read('config.ini')
+
+        if 'COMMON' in config:
+            self.port_input.setText(config['COMMON'].get('Port', ''))
+            self.code_input.setText(config['COMMON'].get('Code', ''))
+
+        for group in self.groups:
+            if group in config:
+                self.token_inputs[group].setText(config[group].get('Token', ''))
+
+    def manual_save(self):  # 手动保存配置
+        port = self.port_input.text()
+        code = self.code_input.text()
+
+        token_dict = {}
+        missing_groups = []
+
+        for group, input_field in self.token_inputs.items():
+            token = input_field.text()
+            if token:
+                token_dict[group] = token
+                # 设置为正常状态（清除红色边框）
+                input_field.setStyleSheet("")
+            else:
+                missing_groups.append(group)
+                # 设置红色边框
+                input_field.setStyleSheet("border: 1px solid red;")
+
+        if not port or not code:
+            QMessageBox.warning(self, "警告", "请填写完整的配置（port和code）！")
+            return
+
+        self.save_config(port, token_dict, code)
+
+        if missing_groups:
+            missing_text = "、".join(missing_groups)
+            QMessageBox.information(self, "部分保存成功", f"配置已保存，但以下小组未填写 Cookie：{missing_text}")
+        else:
+            QMessageBox.information(self, "提示", "配置已完整保存！")
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+
+    # 弹出密码输入框
+    password, ok = QInputDialog.getText(
+        None,
+        "密码验证",
+        "请输入启动密码：",
+        QLineEdit.Password
+    )
+
+    # 判断密码
+    if ok and password == "tx007":  # 修改为你自己设定的密码
+        window = UserWindow()         # 直接用你定义的类
+        window.show()
+        sys.exit(app.exec_())
+    else:
+        QMessageBox.critical(None, "验证失败", "密码错误，程序即将退出。")
+        sys.exit(0)
